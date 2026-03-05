@@ -8,6 +8,8 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <queue>
+#include <map>
 
 #include <tuple>
 #include <string>
@@ -281,22 +283,15 @@ int IsValidArmConfiguration(double* angles, int numofDOFs, double*	map,
 	return 1;
 }
 
-static void linear_interp(
+bool linear_interp(
 			double* map,
 			int x_size,
 			int y_size,
 			double* armstart_anglesV_rad,
 			double* armgoal_anglesV_rad,
-            int numofDOFs,
-            double*** plan,
-            int* planlength)
+            int numofDOFs
+		)
 {
-	//no plan by default
-	*plan = NULL;
-	*planlength = 0;
-		
-    //for now just do straight interpolation between start and goal checking for the validity of samples
-
     double distance = 0;
     int i,j;
     for (j = 0; j < numofDOFs; j++){
@@ -309,22 +304,25 @@ static void linear_interp(
         return;
     }
 	int countNumInvalid = 0;
-    *plan = (double**) malloc(numofsamples*sizeof(double*));
+    double **plan = (double**) malloc(numofsamples*sizeof(double*));
     for (i = 0; i < numofsamples; i++){
-        (*plan)[i] = (double*) malloc(numofDOFs*sizeof(double)); 
+        plan[i] = (double*) malloc(numofDOFs*sizeof(double)); 
         for(j = 0; j < numofDOFs; j++){
-            (*plan)[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
+            plan[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
         }
-        if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
+        if(!IsValidArmConfiguration(plan[i], numofDOFs, map, x_size, y_size)) {
 			++countNumInvalid;
         }
     }
-	printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
-    *planlength = numofsamples;
-    
-    return;
+	// printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
+    if (countNumInvalid == 0) return true;
+    return false;
 }
 
+/** PRM Planner
+ * TODO: make a prm visualizer to see angles it explored
+ * NOTE: in progress
+*/
 static void planner(
 			double* map,
 			int x_size,
@@ -338,34 +336,88 @@ static void planner(
 	//no plan by default
 	*plan = NULL;
 	*planlength = 0;
-		
-    //for now just do straight interpolation between start and goal checking for the validity of samples
+	typedef double *Node;
+    using State = std::pair<Node, int>;  
 
-    double distance = 0;
-    int i,j;
-    for (j = 0; j < numofDOFs; j++){
-        if(distance < fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]))
-            distance = fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]);
-    }
-    int numofsamples = (int)(distance/(PI/20));
-    if(numofsamples < 2){
-        printf("The arm is already at the goal\n");
-        return;
-    }
-	int countNumInvalid = 0;
-    *plan = (double**) malloc(numofsamples*sizeof(double*));
-    for (i = 0; i < numofsamples; i++){
-        (*plan)[i] = (double*) malloc(numofDOFs*sizeof(double)); 
-        for(j = 0; j < numofDOFs; j++){
-            (*plan)[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
-        }
-        if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
-			++countNumInvalid;
-        }
-    }
-	printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
-    *planlength = numofsamples;
-    
+	// init vars
+	int n = 1000;
+	int k = 4;
+	const long max_rand = 1000000L;
+	double lower_bound = 0;
+	double upper_bound = PI;
+	int distance;
+	srandom(time(NULL));
+
+	// some helpers
+	auto is_connected = [&](Node start, Node end) -> bool {
+		return linear_interp(map, x_size, y_size, start, end, numofDOFs);
+    };
+	
+	// init graph
+	std::map<Node, int> mappings; 
+	Node *graph_set = (Node *)calloc(sizeof(Node), n);
+	int **graph_matrix = (int**)malloc(sizeof(int*)*n); // alloc rows
+	for (int i = 0; i < n; i++)
+	{
+		graph_matrix[i] = (int*)calloc(sizeof(int), n); // alloc columns
+	}
+
+	// TODO: std::vector<Node **> gm[n];
+
+	// graph generation
+	for (int i = 0; i < n; i++)
+	{
+		// generate random node
+		Node node = (Node)malloc(numofDOFs*sizeof(double));
+		for (int j = 0; j < numofDOFs; j++){
+			node[j] = lower_bound + (upper_bound - lower_bound) * (random() % max_rand)/ max_rand;
+		}
+
+		// check if node is not valid
+		if (!IsValidArmConfiguration(node, numofDOFs, map, x_size, y_size)) break;
+
+		// if valid: add to graph, check if x can be connected to the k closest nodes by doing lin interp 
+		graph_set[i] = node;
+		mappings[node] = i;
+
+		// get distances from neighbors
+    	std::priority_queue<State, std::vector<State>, std::less<State>> distances;
+
+		for (int neighbor_i = 0; neighbor_i < n; neighbor_i++)
+		{
+			// remeber to ignore itself
+			if (neighbor_i == i) break; 
+
+			Node neighbor = graph_set[neighbor_i];
+			if (neighbor == NULL) break;
+
+			distance = 0;
+			for (int angle_i = 0; angle_i < numofDOFs; angle_i++)
+			{
+				distance += (neighbor[angle_i] - node[angle_i]) * (neighbor[angle_i] - node[angle_i]);
+			}
+			distances.push({neighbor, distance});
+		}
+
+		// check top k closest neighbors if they can be connected to node
+		for (int k_i = 0; k_i < k; k_i)
+		{
+			Node k_canidate = distances.top().first;
+			distance = distances.top().second;
+			distances.pop();
+
+			if (is_connected(k_canidate, node))
+			{
+				graph_matrix[mappings[k_canidate]][i] = distance;
+				graph_matrix[i][mappings[k_canidate]] = distance;
+			}
+		}
+	}
+	// TODO: save a file that has all the nodes that were added and the edges - use file to generate visualization of PRM
+
+	// graph search
+	// return path
+
     return;
 }
 
