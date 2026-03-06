@@ -374,10 +374,10 @@ static void planner(
 	*planlength = 0;
 	typedef double *Node;
     using State = std::pair<double, int>;  
-	string mapfile = "map1.txt";
+	string mapfile = "map2.txt";
 
 	// init vars
-	int n = 1000;
+	int n = 10000;
 	int k = 4;
 	const long max_rand = 1000000L;
 	double lower_bound = 0;
