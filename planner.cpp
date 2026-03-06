@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <queue>
 #include <map>
+#include <random>
 
 #include <tuple>
 #include <string>
@@ -329,21 +330,36 @@ static void linear_interp_planner(
 }
 
 bool linear_interp(double* map, int x_size, int y_size, double* start, double* end, int numofDOFs) {
+    std::vector<double> diffs(numofDOFs);
     double max_diff = 0;
+
     for (int j = 0; j < numofDOFs; j++) {
-        double diff = fabs(start[j] - end[j]);
-        if (diff > max_diff) max_diff = diff;
+        double d = end[j] - start[j];
+        
+        // wrap the difference to [-PI, PI] - finds the shortest way around the circle
+        while (d > PI)  d -= 2 * PI;
+        while (d < -PI) d += 2 * PI;
+        
+        diffs[j] = d;
+        if (fabs(d) > max_diff) max_diff = fabs(d);
     }
     
+    // Use max_diff to determine sampling density
     int numofsamples = (int)(max_diff / (PI / 20));
     if (numofsamples < 2) return true;
 
-    // Use a single local array to avoid malloc/free overhead
     std::vector<double> temp_config(numofDOFs);
     for (int i = 0; i < numofsamples; i++) {
         double ratio = (double)i / (numofsamples - 1);
         for (int j = 0; j < numofDOFs; j++) {
-            temp_config[j] = start[j] + ratio * (end[j] - start[j]);
+            // interpolate using the shortest path difference
+            double val = start[j] + ratio * diffs[j];
+            
+            // keep the resulting angle within [0, 2*PI] for the collision checker
+            while (val < 0) val += 2 * PI;
+            while (val >= 2 * PI) val -= 2 * PI;
+            
+            temp_config[j] = val;
         }
         if (!IsValidArmConfiguration(temp_config.data(), numofDOFs, map, x_size, y_size)) {
             return false;
@@ -353,7 +369,7 @@ bool linear_interp(double* map, int x_size, int y_size, double* start, double* e
 }
 
 /** PRM Planner
- * TODO: make a prm visualizer to see angles it explored
+ * 
  * NOTE: in progress
 */
 static void planner(
@@ -369,19 +385,23 @@ static void planner(
 {
 	printf("Running PRM\n");
 	auto start_time = std::chrono::high_resolution_clock::now();
-	//no plan by default
+
+	// no plan by default
 	*plan = NULL;
 	*planlength = 0;
+
+	// constants
 	typedef double *Node;
     using State = std::pair<double, int>;  
-	string mapfile = "map2.txt";
+	
+	const string mapfile = "map2.txt";
+	const int n = 500;
+	const int k = 4;
+	const long max_rand = 1000000L;
+	const double lower_bound = 0;
+	const double upper_bound = PI;
 
 	// init vars
-	int n = 10000;
-	int k = 4;
-	const long max_rand = 1000000L;
-	double lower_bound = 0;
-	double upper_bound = PI;
 	double distance;
 	srandom(time(NULL));
 
@@ -399,7 +419,14 @@ static void planner(
 		graph_matrix[i] = (double*)calloc(sizeof(double), n); // alloc columns
 	}
 
-	// TODO: std::vector<Node **> gm[n];
+	// is it faster to use std::vector? e.g. std::vector<Node **> gm[n];
+
+	// setup random number engines 
+	std::default_random_engine generator(time(NULL));
+	std::uniform_real_distribution<double> uniform(0.0, 2 * PI);
+	// Standard deviation (sigma) determines how close nodes are to obstacles
+	// A sigma of PI/10 (18 degrees) is a good starting point
+	std::normal_distribution<double> gaussian(0.0, PI / 10);
 
 	// graph generation
 	graph_set[0] = armstart_anglesV_rad; // Start node
@@ -407,20 +434,45 @@ static void planner(
 	// Start your random loop from i = 2
 	for (int i = 2; i < n; i++) 
 	{
-		// generate random node
-		Node node = (Node)malloc(numofDOFs*sizeof(double));
-		for (int j = 0; j < numofDOFs; j++){
-			node[j] = lower_bound + (upper_bound - lower_bound) * (random() % max_rand)/ max_rand;
+		Node q1 = (Node)malloc(numofDOFs * sizeof(double));
+		Node q2 = (Node)malloc(numofDOFs * sizeof(double));
+		
+		// Generate q1 (Uniform)
+		for (int j = 0; j < numofDOFs; j++) q1[j] = uniform(generator);
+		
+		// Generate q2 (Gaussian around q1)
+		for (int j = 0; j < numofDOFs; j++) {
+			q2[j] = q1[j] + gaussian(generator);
+			// Wrap to [0, 2PI]
+			while (q2[j] < 0) q2[j] += 2 * PI;
+			while (q2[j] >= 2 * PI) q2[j] -= 2 * PI;
 		}
 
-		// check if node is not valid
-		if (!IsValidArmConfiguration(node, numofDOFs, map, x_size, y_size)) continue;
+		bool q1_valid = IsValidArmConfiguration(q1, numofDOFs, map, x_size, y_size);
+		bool q2_valid = IsValidArmConfiguration(q2, numofDOFs, map, x_size, y_size);
 
-		// if valid: add to graph, check if x can be connected to the k closest nodes by doing lin interp 
+		Node node = NULL;
+		// gaussian sampling: only care if exactly one is in collision
+		if (q1_valid && !q2_valid) {
+			node = q1;
+			free(q2); 
+		} else if (!q1_valid && q2_valid) {
+			node = q2;
+			free(q1); 
+		} else {
+			// Both valid or both invalid: discard both
+			free(q1);
+			free(q2);
+			i--; // Decrement to try again
+			continue;
+		}
+
+		//add to graph
 		graph_set[i] = node;
 		mappings[node] = i;
 
-		// get distances from neighbors
+		// check if node can be connected to the k closest nodes by doing lin interp 
+		// first, get distances from neighbors
     	std::priority_queue<State, std::vector<State>, std::greater<State>> distances;
 
 		for (int neighbor_i = 0; neighbor_i < i; neighbor_i++)
@@ -439,19 +491,21 @@ static void planner(
 			distances.push({distance, neighbor_i});
 		}
 
-		// Change the k-connection loop to this:
+		// second, check k closest neighbors
 		for (int k_i = 0; k_i < k && !distances.empty(); k_i++) {
 			int k_candidate = distances.top().second;
 			double dist = distances.top().first;
 			distances.pop();
 
-			if (is_connected(graph_set[k_candidate], node)) {
+			if (is_connected(graph_set[k_candidate], node)) 
+			{
 				graph_matrix[k_candidate][i] = dist;
 				graph_matrix[i][k_candidate] = dist;
 			}
 		}
 	}
-	// Save PRM graph for visualization
+
+	// save PRM graph for visualization (not necessary for actual planning)
 	string map_basename = mapfile.substr(mapfile.find_last_of("/\\") + 1);
 	string prm_filename = "prm_graph_" + map_basename;
 	std::ofstream prm_file(prm_filename, std::ios::trunc);
@@ -487,9 +541,11 @@ static void planner(
 		cout << "PRM graph saved to " << prm_filename << endl;
 	}
 
-	// graph search
-	// return path
+	// TODO: graph search
 
+	// TODO: return path
+
+	// document time
 	auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
     printf("time: %.4f ms\n", elapsed.count());
