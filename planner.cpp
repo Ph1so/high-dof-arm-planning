@@ -283,15 +283,23 @@ int IsValidArmConfiguration(double* angles, int numofDOFs, double*	map,
 	return 1;
 }
 
-bool linear_interp(
+
+static void linear_interp_planner(
 			double* map,
 			int x_size,
 			int y_size,
 			double* armstart_anglesV_rad,
 			double* armgoal_anglesV_rad,
-            int numofDOFs
-		)
+            int numofDOFs,
+            double*** plan,
+            int* planlength)
 {
+	//no plan by default
+	*plan = NULL;
+	*planlength = 0;
+		
+    //for now just do straight interpolation between start and goal checking for the validity of samples
+
     double distance = 0;
     int i,j;
     for (j = 0; j < numofDOFs; j++){
@@ -304,19 +312,44 @@ bool linear_interp(
         return;
     }
 	int countNumInvalid = 0;
-    double **plan = (double**) malloc(numofsamples*sizeof(double*));
+    *plan = (double**) malloc(numofsamples*sizeof(double*));
     for (i = 0; i < numofsamples; i++){
-        plan[i] = (double*) malloc(numofDOFs*sizeof(double)); 
+        (*plan)[i] = (double*) malloc(numofDOFs*sizeof(double)); 
         for(j = 0; j < numofDOFs; j++){
-            plan[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
+            (*plan)[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
         }
-        if(!IsValidArmConfiguration(plan[i], numofDOFs, map, x_size, y_size)) {
+        if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
 			++countNumInvalid;
         }
     }
-	// printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
-    if (countNumInvalid == 0) return true;
-    return false;
+	printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
+    *planlength = numofsamples;
+    
+    return;
+}
+
+bool linear_interp(double* map, int x_size, int y_size, double* start, double* end, int numofDOFs) {
+    double max_diff = 0;
+    for (int j = 0; j < numofDOFs; j++) {
+        double diff = fabs(start[j] - end[j]);
+        if (diff > max_diff) max_diff = diff;
+    }
+    
+    int numofsamples = (int)(max_diff / (PI / 20));
+    if (numofsamples < 2) return true;
+
+    // Use a single local array to avoid malloc/free overhead
+    std::vector<double> temp_config(numofDOFs);
+    for (int i = 0; i < numofsamples; i++) {
+        double ratio = (double)i / (numofsamples - 1);
+        for (int j = 0; j < numofDOFs; j++) {
+            temp_config[j] = start[j] + ratio * (end[j] - start[j]);
+        }
+        if (!IsValidArmConfiguration(temp_config.data(), numofDOFs, map, x_size, y_size)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /** PRM Planner
@@ -331,13 +364,15 @@ static void planner(
 			double* armgoal_anglesV_rad,
             int numofDOFs,
             double*** plan,
-            int* planlength)
+            int* planlength
+        	)
 {
 	//no plan by default
 	*plan = NULL;
 	*planlength = 0;
 	typedef double *Node;
-    using State = std::pair<Node, int>;  
+    using State = std::pair<double, int>;  
+	string mapfile = "map1.txt";
 
 	// init vars
 	int n = 1000;
@@ -345,7 +380,7 @@ static void planner(
 	const long max_rand = 1000000L;
 	double lower_bound = 0;
 	double upper_bound = PI;
-	int distance;
+	double distance;
 	srandom(time(NULL));
 
 	// some helpers
@@ -356,16 +391,19 @@ static void planner(
 	// init graph
 	std::map<Node, int> mappings; 
 	Node *graph_set = (Node *)calloc(sizeof(Node), n);
-	int **graph_matrix = (int**)malloc(sizeof(int*)*n); // alloc rows
+	double **graph_matrix = (double**)malloc(sizeof(double*)*n); // alloc rows
 	for (int i = 0; i < n; i++)
 	{
-		graph_matrix[i] = (int*)calloc(sizeof(int), n); // alloc columns
+		graph_matrix[i] = (double*)calloc(sizeof(double), n); // alloc columns
 	}
 
 	// TODO: std::vector<Node **> gm[n];
 
 	// graph generation
-	for (int i = 0; i < n; i++)
+	graph_set[0] = armstart_anglesV_rad; // Start node
+	graph_set[1] = armgoal_anglesV_rad;  // Goal node
+	// Start your random loop from i = 2
+	for (int i = 2; i < n; i++) 
 	{
 		// generate random node
 		Node node = (Node)malloc(numofDOFs*sizeof(double));
@@ -374,46 +412,78 @@ static void planner(
 		}
 
 		// check if node is not valid
-		if (!IsValidArmConfiguration(node, numofDOFs, map, x_size, y_size)) break;
+		if (!IsValidArmConfiguration(node, numofDOFs, map, x_size, y_size)) continue;
 
 		// if valid: add to graph, check if x can be connected to the k closest nodes by doing lin interp 
 		graph_set[i] = node;
 		mappings[node] = i;
 
 		// get distances from neighbors
-    	std::priority_queue<State, std::vector<State>, std::less<State>> distances;
+    	std::priority_queue<State, std::vector<State>, std::greater<State>> distances;
 
-		for (int neighbor_i = 0; neighbor_i < n; neighbor_i++)
+		for (int neighbor_i = 0; neighbor_i < i; neighbor_i++)
 		{
 			// remeber to ignore itself
-			if (neighbor_i == i) break; 
+			// if (neighbor_i == i) continue; 
 
 			Node neighbor = graph_set[neighbor_i];
-			if (neighbor == NULL) break;
+			if (neighbor == NULL) continue;
 
 			distance = 0;
 			for (int angle_i = 0; angle_i < numofDOFs; angle_i++)
 			{
 				distance += (neighbor[angle_i] - node[angle_i]) * (neighbor[angle_i] - node[angle_i]);
 			}
-			distances.push({neighbor, distance});
+			distances.push({distance, neighbor_i});
 		}
 
-		// check top k closest neighbors if they can be connected to node
-		for (int k_i = 0; k_i < k; k_i)
-		{
-			Node k_canidate = distances.top().first;
-			distance = distances.top().second;
+		// Change the k-connection loop to this:
+		for (int k_i = 0; k_i < k && !distances.empty(); k_i++) {
+			int k_candidate = distances.top().second;
+			double dist = distances.top().first;
 			distances.pop();
 
-			if (is_connected(k_canidate, node))
-			{
-				graph_matrix[mappings[k_canidate]][i] = distance;
-				graph_matrix[i][mappings[k_canidate]] = distance;
+			if (is_connected(graph_set[k_candidate], node)) {
+				graph_matrix[k_candidate][i] = dist;
+				graph_matrix[i][k_candidate] = dist;
 			}
 		}
 	}
-	// TODO: save a file that has all the nodes that were added and the edges - use file to generate visualization of PRM
+	// Save PRM graph for visualization
+	string map_basename = mapfile.substr(mapfile.find_last_of("/\\") + 1);
+	string prm_filename = "prm_graph_" + map_basename;
+	std::ofstream prm_file(prm_filename, std::ios::trunc);
+	if (prm_file.is_open()) {
+		// Count valid nodes
+		int valid_count = 0;
+		for (int i = 0; i < n; i++) {
+			if (graph_set[i] != nullptr) valid_count++;
+		}
+
+		prm_file << "DOFS " << numofDOFs << "\n";
+		prm_file << "NODES " << valid_count << "\n";
+		for (int i = 0; i < n; i++) {
+			if (graph_set[i] == nullptr) continue;
+			prm_file << i;
+			for (int j = 0; j < numofDOFs; j++) {
+				prm_file << " " << graph_set[i][j];
+			}
+			prm_file << "\n";
+		}
+
+		prm_file << "EDGES\n";
+		for (int i = 0; i < n; i++) {
+			if (graph_set[i] == nullptr) continue;
+			for (int j = i + 1; j < n; j++) {
+				if (graph_set[j] == nullptr) continue;
+				if (graph_matrix[i][j] != 0) {
+					prm_file << i << " " << j << "\n";
+				}
+			}
+		}
+		prm_file.close();
+		cout << "PRM graph saved to " << prm_filename << endl;
+	}
 
 	// graph search
 	// return path
@@ -454,6 +524,7 @@ int main(int argc, char** argv) {
 	double** plan = NULL;
 	int planlength = 0;
 	planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 
 	//// Feel free to modify anything above.
 	//// If you modify something below, please change it back afterwards as the 
