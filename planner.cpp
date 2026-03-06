@@ -367,6 +367,8 @@ static void planner(
             int* planlength
         	)
 {
+	printf("Running PRM\n");
+	auto start_time = std::chrono::high_resolution_clock::now();
 	//no plan by default
 	*plan = NULL;
 	*planlength = 0;
@@ -487,6 +489,10 @@ static void planner(
 
 	// graph search
 	// return path
+
+	auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+    printf("time: %.4f ms\n", elapsed.count());
 
     return;
 }
