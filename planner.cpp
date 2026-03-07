@@ -393,11 +393,13 @@ static void prm(
 			double* armgoal_anglesV_rad,
             int numofDOFs,
             double*** plan,
-            int* planlength
+            int* planlength,
+			int n,
+			int k
         	)
 {
-	printf("Running PRM\n");
-	auto start_time = std::chrono::high_resolution_clock::now();
+	// printf("Running PRM\n");
+	// auto start_time = std::chrono::high_resolution_clock::now();
 
 	// no plan by default
 	*plan = NULL;
@@ -408,8 +410,8 @@ static void prm(
     using State = std::pair<double, int>;  
 	
 	const string mapfile = "map2.txt";
-	const int n = 10000;
-	const int k = 200;
+	// const int n = 10000;
+	// const int k = 200;
 	const long max_rand = 1000000L;
 	const double lower_bound = 0;
 	const double upper_bound = PI;
@@ -523,40 +525,40 @@ static void prm(
 	}
 
 	// save PRM graph for visualization (not necessary for actual planning)
-	string map_basename = mapfile.substr(mapfile.find_last_of("/\\") + 1);
-	string prm_filename = "prm_graph_" + map_basename;
-	std::ofstream prm_file(prm_filename, std::ios::trunc);
-	if (prm_file.is_open()) {
-		// Count valid nodes
-		int valid_count = 0;
-		for (int i = 0; i < n; i++) {
-			if (graph_set[i] != nullptr) valid_count++;
-		}
+	// string map_basename = mapfile.substr(mapfile.find_last_of("/\\") + 1);
+	// string prm_filename = "prm_graph_" + map_basename;
+	// std::ofstream prm_file(prm_filename, std::ios::trunc);
+	// if (prm_file.is_open()) {
+	// 	// Count valid nodes
+	// 	int valid_count = 0;
+	// 	for (int i = 0; i < n; i++) {
+	// 		if (graph_set[i] != nullptr) valid_count++;
+	// 	}
 
-		prm_file << "DOFS " << numofDOFs << "\n";
-		prm_file << "NODES " << valid_count << "\n";
-		for (int i = 0; i < n; i++) {
-			if (graph_set[i] == nullptr) continue;
-			prm_file << i;
-			for (int j = 0; j < numofDOFs; j++) {
-				prm_file << " " << graph_set[i][j];
-			}
-			prm_file << "\n";
-		}
+	// 	prm_file << "DOFS " << numofDOFs << "\n";
+	// 	prm_file << "NODES " << valid_count << "\n";
+	// 	for (int i = 0; i < n; i++) {
+	// 		if (graph_set[i] == nullptr) continue;
+	// 		prm_file << i;
+	// 		for (int j = 0; j < numofDOFs; j++) {
+	// 			prm_file << " " << graph_set[i][j];
+	// 		}
+	// 		prm_file << "\n";
+	// 	}
 
-		prm_file << "EDGES\n";
-		for (int i = 0; i < n; i++) {
-			if (graph_set[i] == nullptr) continue;
-			for (int j = i + 1; j < n; j++) {
-				if (graph_set[j] == nullptr) continue;
-				if (graph_matrix[i][j] != 0) {
-					prm_file << i << " " << j << "\n";
-				}
-			}
-		}
-		prm_file.close();
-		cout << "PRM graph saved to " << prm_filename << endl;
-	}
+	// 	prm_file << "EDGES\n";
+	// 	for (int i = 0; i < n; i++) {
+	// 		if (graph_set[i] == nullptr) continue;
+	// 		for (int j = i + 1; j < n; j++) {
+	// 			if (graph_set[j] == nullptr) continue;
+	// 			if (graph_matrix[i][j] != 0) {
+	// 				prm_file << i << " " << j << "\n";
+	// 			}
+	// 		}
+	// 	}
+	// 	prm_file.close();
+	// 	cout << "PRM graph saved to " << prm_filename << endl;
+	// }
 
 	// A* search
     std::vector<double> g_score(n, std::numeric_limits<double>::infinity());
@@ -662,16 +664,199 @@ static void prm(
                 (*plan)[i][d] = interpolated_path[i][d];
             }
         }
-        printf("A* found path. After 16-deg interpolation, plan length is %d\n", *planlength);
+        // printf("A* found path. After 16-deg interpolation, plan length is %d\n", *planlength);
     } else {
         printf("A* failed to find a path.\n");
     }
 
-	auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
-    printf("time: %.4f ms\n", elapsed.count());
+	// auto end_time = std::chrono::high_resolution_clock::now();
+    // std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+    // printf("time: %.4f ms\n", elapsed.count());
 
     return;
+}
+
+#include <chrono>
+
+struct OptResult {
+    int n;
+    int k;
+    double cost;
+    double time;
+};
+
+// A wrapper for your PRM that returns performance metrics
+OptResult evaluate_prm(int n, int k, double* map, int x_size, int y_size, 
+                      double* start, double* goal, int dofs) {
+    double** plan = NULL;
+    int planlength = 0;
+    
+    auto start_t = std::chrono::high_resolution_clock::now();
+    
+    // Call your prm function (modified to take n and k)
+    prm(map, x_size, y_size, start, goal, dofs, &plan, &planlength, n, k);
+    
+    auto end_t = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end_t - start_t;
+
+    double cost = (planlength > 0) ? calc_cost(plan, dofs, planlength) : 1e9;
+    
+    // Clean up plan memory to prevent leaks during optimization
+    if(plan) {
+        for(int i=0; i<planlength; i++) free(plan[i]);
+        free(plan);
+    }
+
+    return {n, k, cost, elapsed.count()};
+}
+
+void optimize_planner(double* map, int x_size, int y_size, double* start,
+                      double* goal, int dofs, double*** final_plan, int* final_length) {
+
+    // === Bayesian Optimization over (n, k) ===
+    // Surrogate: Gaussian Process with RBF kernel
+    // Acquisition: Expected Improvement (minimization)
+    const double N_MIN = 1000, N_MAX = 8000;
+    const double K_MIN = 10,   K_MAX = 200;
+    const double TIME_LIMIT = 4.5; // seconds (buffer below 5000ms limit)
+    const int INIT_SAMPLES = 3;
+    const int MAX_ITER = 500;
+    const int RUNS_PER_EVAL = 5;
+    const double GP_NOISE = 1e-4;
+    const double LENGTH_SCALE = 0.3; // RBF kernel length scale in normalized space
+
+    // Normalize helpers
+    auto norm_n = [&](double n) { return (n - N_MIN) / (N_MAX - N_MIN); };
+    auto norm_k = [&](double k) { return (k - K_MIN) / (K_MAX - K_MIN); };
+
+    // RBF kernel between two normalized points
+    auto rbf = [&](double n1, double k1, double n2, double k2) {
+        double dn = n1 - n2, dk = k1 - k2;
+        return std::exp(-(dn*dn + dk*dk) / (2.0 * LENGTH_SCALE * LENGTH_SCALE));
+    };
+
+    std::default_random_engine gen(time(NULL));
+    std::uniform_real_distribution<double> rand_n(N_MIN, N_MAX);
+    std::uniform_real_distribution<double> rand_k(K_MIN, K_MAX);
+
+    std::vector<double> obs_n, obs_k, obs_cost;
+    OptResult best_found = {0, 0, 1e9, 0.0};
+
+    auto add_observation = [&](int test_n, int test_k) {
+        double total_cost = 0.0, total_time = 0.0;
+        for (int r = 0; r < RUNS_PER_EVAL; r++) {
+            OptResult res = evaluate_prm(test_n, test_k, map, x_size, y_size, start, goal, dofs);
+            total_cost += res.cost;
+            total_time += res.time;
+        }
+        double avg_cost = total_cost / RUNS_PER_EVAL;
+        double avg_time = total_time / RUNS_PER_EVAL;
+
+        obs_n.push_back(norm_n(test_n));
+        obs_k.push_back(norm_k(test_k));
+        // Penalize infeasible (too slow) runs with a large cost
+        double penalized = (avg_time < TIME_LIMIT) ? avg_cost : 1e9;
+        obs_cost.push_back(penalized);
+        if (avg_time < TIME_LIMIT && avg_cost < best_found.cost) {
+            best_found = {test_n, test_k, avg_cost, avg_time};
+            printf("[BO] New Best: n=%d, k=%d, AvgCost=%.2f, AvgTime=%.2fs\n",
+                   test_n, test_k, avg_cost, avg_time);
+        }
+    };
+
+    // --- Phase 1: random initial samples ---
+    for (int i = 0; i < INIT_SAMPLES; i++)
+        add_observation((int)rand_n(gen), (int)rand_k(gen));
+
+    // --- Phase 2: BO iterations ---
+    for (int iter = INIT_SAMPLES; iter < MAX_ITER; iter++) {
+		printf("%d\n", iter);
+        int m = (int)obs_n.size();
+
+        // Build K matrix (m x m) with noise on diagonal
+        std::vector<std::vector<double>> L(m, std::vector<double>(m, 0.0));
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < m; j++)
+                L[i][j] = rbf(obs_n[i], obs_k[i], obs_n[j], obs_k[j]) + (i == j ? GP_NOISE : 0.0);
+
+        // Cholesky: L overwritten with lower triangular factor
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j <= i; j++) {
+                double s = L[i][j];
+                for (int p = 0; p < j; p++) s -= L[i][p] * L[j][p];
+                L[i][j] = (i == j) ? std::sqrt(std::max(s, 1e-12)) : s / L[j][j];
+            }
+            for (int j = i + 1; j < m; j++) L[i][j] = 0.0;
+        }
+
+        // Solve K * alpha = obs_cost via Cholesky (forward then back sub)
+        std::vector<double> tmp(m), alpha(m);
+        for (int i = 0; i < m; i++) {
+            double s = obs_cost[i];
+            for (int j = 0; j < i; j++) s -= L[i][j] * tmp[j];
+            tmp[i] = s / L[i][i];
+        }
+        for (int i = m - 1; i >= 0; i--) {
+            double s = tmp[i];
+            for (int j = i + 1; j < m; j++) s -= L[j][i] * alpha[j];
+            alpha[i] = s / L[i][i];
+        }
+
+        double f_best = *std::min_element(obs_cost.begin(), obs_cost.end());
+
+        // Grid search for max Expected Improvement
+        const int GRID = 35;
+        double best_ei = -1.0;
+        double cand_n = obs_n[0], cand_k = obs_k[0];
+
+        for (int gi = 0; gi < GRID; gi++) {
+            for (int gj = 0; gj < GRID; gj++) {
+                double cn = gi / (double)(GRID - 1);
+                double ck = gj / (double)(GRID - 1);
+
+                // GP posterior mean
+                double mu = 0.0;
+                for (int i = 0; i < m; i++)
+                    mu += rbf(cn, ck, obs_n[i], obs_k[i]) * alpha[i];
+
+                // GP posterior variance via v = L^{-1} k_star
+                std::vector<double> v(m);
+                for (int i = 0; i < m; i++) {
+                    double s = rbf(cn, ck, obs_n[i], obs_k[i]);
+                    for (int j = 0; j < i; j++) s -= L[i][j] * v[j];
+                    v[i] = s / L[i][i];
+                }
+                double var = 1.0; // k(x*, x*) = 1 for normalized RBF
+                for (int i = 0; i < m; i++) var -= v[i] * v[i];
+                double sigma = std::sqrt(std::max(var, 0.0));
+
+                // Expected Improvement (minimization form)
+                double ei = 0.0;
+                if (sigma > 1e-10) {
+                    double z = (f_best - mu) / sigma;
+                    double phi = std::exp(-0.5 * z * z) / std::sqrt(2.0 * M_PI);
+                    double Phi = 0.5 * (1.0 + std::erf(z / std::sqrt(2.0)));
+                    ei = (f_best - mu) * Phi + sigma * phi;
+                }
+                if (ei > best_ei) { best_ei = ei; cand_n = cn; cand_k = ck; }
+            }
+        }
+
+        // Denormalize candidate
+        int test_n = std::max((int)N_MIN, std::min((int)N_MAX,
+                        (int)(cand_n * (N_MAX - N_MIN) + N_MIN)));
+        int test_k = std::max((int)K_MIN, std::min((int)K_MAX,
+                        (int)(cand_k * (K_MAX - K_MIN) + K_MIN)));
+        add_observation(test_n, test_k);
+    }
+
+    // Final run with best found parameters
+    if (best_found.n > 0)
+        prm(map, x_size, y_size, start, goal, dofs, final_plan, final_length,
+            best_found.n, best_found.k);
+    else
+        prm(map, x_size, y_size, start, goal, dofs, final_plan, final_length, 5000, 20);
+	printf("Best parameters n: %d, and k: %d with cost: %f\n", best_found.n, best_found.k, calc_cost(*final_plan, dofs, *final_length));
 }
 
 /** Your final solution will be graded by an grading script which will
@@ -706,9 +891,18 @@ int main(int argc, char** argv) {
 
 	double** plan = NULL;
 	int planlength = 0;
-	if (whichPlanner == 3) prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	auto start_time = std::chrono::high_resolution_clock::now();
+	if (whichPlanner == 3) {
+		printf("Running PRM\n");
+		prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength, 2000, 160);
+	}
 	else linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+    printf("time: %.4f ms\n", elapsed.count());
 	printf("cost: %f\n", calc_cost(plan, numOfDOFs, planlength));
+
+	// optimize_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 
 	//// Feel free to modify anything above.
 	//// If you modify something below, please change it back afterwards as the 
