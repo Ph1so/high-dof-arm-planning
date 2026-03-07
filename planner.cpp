@@ -11,6 +11,7 @@
 #include <queue>
 #include <map>
 #include <random>
+#include <chrono>
 
 #include <tuple>
 #include <string>
@@ -619,39 +620,48 @@ static void prm(
         }
         std::reverse(path_indices.begin(), path_indices.end());
 
-        // max 16 degree change per step
-        const double MAX_STEP = 8.0 * (PI / 180.0);
         std::vector<std::vector<double>> interpolated_path;
 
         for (size_t i = 0; i < path_indices.size() - 1; i++) {
-            double* start_node = graph_set[path_indices[i]];
-            double* end_node = graph_set[path_indices[i+1]];
+            double* seg_start = graph_set[path_indices[i]];
+            double* seg_end   = graph_set[path_indices[i+1]];
 
-            // maximum angular distance between any joint
-            double max_dist = 0;
+            // shortest-arc differences (same as linear_interp)
+            std::vector<double> diffs(numofDOFs);
+            double max_diff = 0;
             for (int d = 0; d < numofDOFs; d++) {
-                double diff = fabs(end_node[d] - start_node[d]);
-                if (diff > max_dist) max_dist = diff;
+                double diff = seg_end[d] - seg_start[d];
+                while (diff >  PI) diff -= 2 * PI;
+                while (diff < -PI) diff += 2 * PI;
+                diffs[d] = diff;
+                if (fabs(diff) > max_diff) max_diff = fabs(diff);
             }
 
-            // how many segments to satisfy the 16 degree limit
-            int steps = (int)ceil(max_dist / MAX_STEP);
-            if (steps < 1) steps = 1;
+            int steps = (int)(max_diff / (PI / 20));
+            if (steps < 2) {
+                // Segment too short (same threshold as linear_interp); just record the start point
+                interpolated_path.push_back(std::vector<double>(seg_start, seg_start + numofDOFs));
+                continue;
+            }
 
-            // interp (excluding the last point, which is the start of the next segment)
-            for (int s = 0; s < steps; s++) {
+            // Sample at t = s/(steps-1) for s=0..steps-2, matching linear_interp's grid exactly.
+            // Exclude the endpoint (t=1) — it will appear as t=0 of the next segment.
+            for (int s = 0; s < steps - 1; s++) {
+                double t = (double)s / (steps - 1);
                 std::vector<double> state(numofDOFs);
-                double t = (double)s / steps;
                 for (int d = 0; d < numofDOFs; d++) {
-                    state[d] = start_node[d] + t * (end_node[d] - start_node[d]);
+                    double val = seg_start[d] + t * diffs[d];
+                    while (val <      0) val += 2 * PI;
+                    while (val >= 2*PI) val -= 2 * PI;
+                    state[d] = val;
                 }
                 interpolated_path.push_back(state);
             }
         }
-        
+
         // add the goal node
         std::vector<double> goal_state(numofDOFs);
-        for(int d = 0; d < numofDOFs; d++) goal_state[d] = graph_set[goal_node][d];
+        for (int d = 0; d < numofDOFs; d++) goal_state[d] = graph_set[goal_node][d];
         interpolated_path.push_back(goal_state);
 
         // convert std::vector to the double** format
@@ -676,8 +686,10 @@ static void prm(
     return;
 }
 
-#include <chrono>
-
+/** Parameter optimization 
+ * 
+ * 
+ */
 struct OptResult {
     int n;
     int k;
@@ -902,6 +914,11 @@ int main(int argc, char** argv) {
     printf("time: %.4f ms\n", elapsed.count());
 	printf("cost: %f\n", calc_cost(plan, numOfDOFs, planlength));
 
+	// double check that path is valid
+	for (int i = 0; i < planlength; i++)
+	{
+		if (!IsValidArmConfiguration(plan[i], numOfDOFs, map, x_size, y_size)) printf("Invalid path\n");
+	}
 	// optimize_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 
 	//// Feel free to modify anything above.
