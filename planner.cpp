@@ -284,6 +284,19 @@ int IsValidArmConfiguration(double* angles, int numofDOFs, double*	map,
 	return 1;
 }
 
+double calc_cost(double** plan, int numofDOFs, int planlength)
+{
+	double total_cost = 0;
+	for (int i = 1; i < planlength; i++)
+	{
+		for (int n = 0; n < numofDOFs; n++)
+		{
+			total_cost += fabs(plan[i][n] - plan[i-1][n]);
+		}
+	}
+	return total_cost;
+}
+
 
 static void linear_interp_planner(
 			double* map,
@@ -395,8 +408,8 @@ static void prm(
     using State = std::pair<double, int>;  
 	
 	const string mapfile = "map2.txt";
-	const int n = 1000;
-	const int k = 20;
+	const int n = 10000;
+	const int k = 200;
 	const long max_rand = 1000000L;
 	const double lower_bound = 0;
 	const double upper_bound = PI;
@@ -428,7 +441,7 @@ static void prm(
 	// A sigma of PI/10 (18 degrees) is a good starting point
 	std::normal_distribution<double> gaussian(0.0, PI / 10);
 
-	// graph generation
+	// node generation
 	graph_set[0] = armstart_anglesV_rad; // Start node
 	graph_set[1] = armgoal_anglesV_rad;  // Goal node
 	// Start your random loop from i = 2
@@ -470,11 +483,15 @@ static void prm(
 		//add to graph
 		graph_set[i] = node;
 		mappings[node] = i;
+	}
 
+	// connect the nodes
+	for (int i = 0; i < n; i++)
+	{
 		// check if node can be connected to the k closest nodes by doing lin interp 
 		// first, get distances from neighbors
     	std::priority_queue<State, std::vector<State>, std::greater<State>> distances;
-
+		Node node = graph_set[i];
 		for (int neighbor_i = 0; neighbor_i < i; neighbor_i++)
 		{
 			// remeber to ignore itself
@@ -601,7 +618,7 @@ static void prm(
         std::reverse(path_indices.begin(), path_indices.end());
 
         // max 16 degree change per step
-        const double MAX_STEP = 16.0 * (PI / 180.0);
+        const double MAX_STEP = 8.0 * (PI / 180.0);
         std::vector<std::vector<double>> interpolated_path;
 
         for (size_t i = 0; i < path_indices.size() - 1; i++) {
@@ -650,6 +667,10 @@ static void prm(
         printf("A* failed to find a path.\n");
     }
 
+	auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+    printf("time: %.4f ms\n", elapsed.count());
+
     return;
 }
 
@@ -687,6 +708,7 @@ int main(int argc, char** argv) {
 	int planlength = 0;
 	if (whichPlanner == 3) prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	else linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	printf("cost: %f\n", calc_cost(plan, numOfDOFs, planlength));
 
 	//// Feel free to modify anything above.
 	//// If you modify something below, please change it back afterwards as the 
