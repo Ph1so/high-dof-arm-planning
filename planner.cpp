@@ -372,7 +372,7 @@ bool linear_interp(double* map, int x_size, int y_size, double* start, double* e
  * 
  * NOTE: in progress
 */
-static void planner(
+static void prm(
 			double* map,
 			int x_size,
 			int y_size,
@@ -395,8 +395,8 @@ static void planner(
     using State = std::pair<double, int>;  
 	
 	const string mapfile = "map2.txt";
-	const int n = 500;
-	const int k = 4;
+	const int n = 1000;
+	const int k = 20;
 	const long max_rand = 1000000L;
 	const double lower_bound = 0;
 	const double upper_bound = PI;
@@ -541,14 +541,114 @@ static void planner(
 		cout << "PRM graph saved to " << prm_filename << endl;
 	}
 
-	// TODO: graph search
+	// A* search
+    std::vector<double> g_score(n, std::numeric_limits<double>::infinity());
+    std::vector<int> parent(n, -1);
+    
+    // priority queue stores pair<f_score, node_index>
+    using AStarState = std::pair<double, int>;
+    std::priority_queue<AStarState, std::vector<AStarState>, std::greater<AStarState>> open_set;
 
-	// TODO: return path
+    int start_node = 0;
+    int goal_node = 1;
 
-	// document time
-	auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
-    printf("time: %.4f ms\n", elapsed.count());
+    g_score[start_node] = 0;
+    
+    auto get_heuristic = [&](int idx) {
+        double h = 0;
+        for (int d = 0; d < numofDOFs; d++) {
+            double diff = graph_set[idx][d] - graph_set[goal_node][d];
+            h += diff * diff;
+        }
+        return sqrt(h);
+    };
+
+    open_set.push({get_heuristic(start_node), start_node});
+
+    bool found_path = false;
+    while (!open_set.empty()) {
+        int current = open_set.top().second;
+        open_set.pop();
+
+        if (current == goal_node) {
+            found_path = true;
+            break;
+        }
+
+        for (int neighbor = 0; neighbor < n; neighbor++) {
+            double edge_weight = graph_matrix[current][neighbor];
+            if (edge_weight > 0) { // If there's an edge
+                double tentative_g = g_score[current] + sqrt(edge_weight);
+
+                if (tentative_g < g_score[neighbor]) {
+                    parent[neighbor] = current;
+                    g_score[neighbor] = tentative_g;
+                    double f_score = tentative_g + get_heuristic(neighbor);
+                    open_set.push({f_score, neighbor});
+                }
+            }
+        }
+    }
+
+    // path reconstruction with interp
+    if (found_path) {
+        std::vector<int> path_indices;
+        int curr = goal_node;
+        while (curr != -1) {
+            path_indices.push_back(curr);
+            curr = parent[curr];
+        }
+        std::reverse(path_indices.begin(), path_indices.end());
+
+        // max 16 degree change per step
+        const double MAX_STEP = 16.0 * (PI / 180.0);
+        std::vector<std::vector<double>> interpolated_path;
+
+        for (size_t i = 0; i < path_indices.size() - 1; i++) {
+            double* start_node = graph_set[path_indices[i]];
+            double* end_node = graph_set[path_indices[i+1]];
+
+            // maximum angular distance between any joint
+            double max_dist = 0;
+            for (int d = 0; d < numofDOFs; d++) {
+                double diff = fabs(end_node[d] - start_node[d]);
+                if (diff > max_dist) max_dist = diff;
+            }
+
+            // how many segments to satisfy the 16 degree limit
+            int steps = (int)ceil(max_dist / MAX_STEP);
+            if (steps < 1) steps = 1;
+
+            // interp (excluding the last point, which is the start of the next segment)
+            for (int s = 0; s < steps; s++) {
+                std::vector<double> state(numofDOFs);
+                double t = (double)s / steps;
+                for (int d = 0; d < numofDOFs; d++) {
+                    state[d] = start_node[d] + t * (end_node[d] - start_node[d]);
+                }
+                interpolated_path.push_back(state);
+            }
+        }
+        
+        // add the goal node
+        std::vector<double> goal_state(numofDOFs);
+        for(int d = 0; d < numofDOFs; d++) goal_state[d] = graph_set[goal_node][d];
+        interpolated_path.push_back(goal_state);
+
+        // convert std::vector to the double** format
+        *planlength = (int)interpolated_path.size();
+        *plan = (double**)malloc((*planlength) * sizeof(double*));
+
+        for (int i = 0; i < *planlength; i++) {
+            (*plan)[i] = (double*)malloc(numofDOFs * sizeof(double));
+            for (int d = 0; d < numofDOFs; d++) {
+                (*plan)[i][d] = interpolated_path[i][d];
+            }
+        }
+        printf("A* found path. After 16-deg interpolation, plan length is %d\n", *planlength);
+    } else {
+        printf("A* failed to find a path.\n");
+    }
 
     return;
 }
@@ -585,8 +685,8 @@ int main(int argc, char** argv) {
 
 	double** plan = NULL;
 	int planlength = 0;
-	planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
-	linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	if (whichPlanner == 3) prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	else linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 
 	//// Feel free to modify anything above.
 	//// If you modify something below, please change it back afterwards as the 
