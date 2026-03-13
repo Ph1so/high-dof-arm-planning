@@ -1,13 +1,18 @@
 """
-PRM Graph Visualizer for Robotic Arm Planning.
+Graph Visualizer for Robotic Arm Planning (PRM and RRT-Connect).
 
 Usage:
-    python3 visualize_prm.py map1.txt
-    python3 visualize_prm.py map2.txt
+    python3 visualize_prm.py <map_file> [graph_file]
 
-Reads the corresponding prm_graph_<mapname>.txt produced by the planner.
-Draws the obstacle map and every sampled configuration as a ghost arm
-overlaid on the same workspace, matching the physical view from the GIF.
+    map_file   - the obstacle map (e.g. map1.txt)
+    graph_file - the graph/tree file written by the planner.
+                 Defaults to prm_graph_<mapname>.txt if not specified.
+
+Examples:
+    python3 visualize_prm.py map1.txt                          # PRM
+    python3 visualize_prm.py map1.txt rrt_connect_graph_map1.txt  # RRT-Connect
+
+The graph file format (DOFS/NODES/EDGES) is the same for both planners.
 """
 
 import sys
@@ -100,20 +105,27 @@ def arm_joints(angles, x_size):
 # Main visualizer
 # ---------------------------------------------------------------------------
 
-def visualize(map_file: str):
+def visualize(map_file: str, graph_file: str = None):
     basename = os.path.basename(map_file)
-    prm_file = f"prm_graph_{basename}"
 
-    if not os.path.exists(prm_file):
-        print(f"ERROR: PRM graph file not found: {prm_file}")
-        print("Run the planner with planner ID 3 (PRM) first.")
+    if graph_file is None:
+        graph_file = f"prm_graph_{basename}"
+
+    if not os.path.exists(graph_file):
+        print(f"ERROR: Graph file not found: {graph_file}")
+        print("Run the planner first to generate the graph file.")
         sys.exit(1)
 
+    graph_basename = os.path.basename(graph_file)
+    planner_label = graph_basename.replace(f"_{basename}", "").replace("_graph", "").replace("_", " ").strip().upper()
+    if not planner_label:
+        planner_label = "Planner"
+
     grid, width, height = load_map(map_file)
-    nodes, edges, dofs = load_prm_graph(prm_file)
+    nodes, edges, dofs = load_prm_graph(graph_file)
 
     if not nodes:
-        print("No nodes in PRM graph.")
+        print("No nodes in graph.")
         sys.exit(1)
 
     print(f"Map: {width}x{height}  |  Nodes: {len(nodes)}  |  Edges: {len(edges)}  |  DOFs: {dofs}")
@@ -167,14 +179,14 @@ def visualize(map_file: str):
     ax.set_xlabel("x (cells)", fontsize=10)
     ax.set_ylabel("y (cells)", fontsize=10)
     ax.set_title(
-        f"PRM Sampled Configurations — {basename}\n"
+        f"{planner_label} Sampled Configurations — {basename}\n"
         f"{len(nodes)} nodes · {len(edges)} edges · {dofs} DOFs",
         fontsize=11,
     )
     ax.legend(fontsize=9, loc="lower right")
 
-    stem    = os.path.splitext(basename)[0]
-    out_png = f"prm_visual_{stem}.png"
+    stem    = os.path.splitext(graph_basename)[0]
+    out_png = f"visual_{stem}.png"
     plt.savefig(out_png, dpi=150, bbox_inches="tight")
     print(f"Saved to '{out_png}'")
     plt.show()
@@ -182,7 +194,9 @@ def visualize(map_file: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 visualize_prm.py <map_file>")
+        print("Usage: python3 visualize_prm.py <map_file> [graph_file]")
         print("  e.g. python3 visualize_prm.py map1.txt")
+        print("  e.g. python3 visualize_prm.py map1.txt rrt_connect_graph_map1.txt")
         sys.exit(1)
-    visualize(sys.argv[1])
+    graph_arg = sys.argv[2] if len(sys.argv) >= 3 else None
+    visualize(sys.argv[1], graph_arg)

@@ -696,9 +696,7 @@ static void rrt_connect(
 			double* armgoal_anglesV_rad,
             int numofDOFs,
             double*** plan,
-            int* planlength,
-			int n,
-			int k
+            int* planlength
         	)
 {
 
@@ -722,8 +720,9 @@ static void rrt_connect(
 	double threshold = 1.0;
 	const long max_rand = 1000000L;
 	double lower_bound = 0;
-	double upper_bound = PI;
+	double upper_bound = 2*PI;
 	srandom(time(NULL));
+	const string mapfile = "map2.txt";
 
     Node q_start; // T_start.init(q_start)
 	q_start.angles.assign(armstart_anglesV_rad, armstart_anglesV_rad + numofDOFs);
@@ -742,41 +741,87 @@ static void rrt_connect(
 		TRAPPED
 	};
 
-	auto nearest_neighbor = [&](std::vector<Node> *T, Node *q_target) -> Node* {
+	auto nearest_neighbor = [&](const std::vector<Node> *T, Node *q_target) -> int {
+		double least_distance = 1e18; // Use a very large number
+		int best_index = 0;
 
+		for (int i = 0; i < (*T).size(); i++) {
+			double sum_sq_dist = 0;
+			
+			for (int j = 0; j < numofDOFs; j++) {
+				double diff = (*T)[i].angles[j] - q_target->angles[j];
+				sum_sq_dist += diff * diff;
+			}
+
+			if (sum_sq_dist < least_distance) {
+				least_distance = sum_sq_dist;
+				best_index = i;
+			}
+		}
+		return best_index;
 	};
 
-	auto step_torward = [&](Node *q_near, Node *q_target, double step_size) -> Node* {
+	auto step_torward = [&](Node *q_near, Node *q_target, double step_size) -> Node {
+		Node q_new;
+		q_new.angles.resize(numofDOFs); 
+		
+		double dist = 0;
+		for(int i = 0; i < numofDOFs; i++) {
+			double diff = q_target->angles[i] - q_near->angles[i];
+			dist += diff * diff;
+		}
+		dist = sqrt(dist);
 
+		if (dist < step_size) return *q_target; 
+
+		for(int i = 0; i < numofDOFs; i++) {
+			q_new.angles[i] = q_near->angles[i] + (q_target->angles[i] - q_near->angles[i]) * (step_size / dist);
+		}
+		return q_new;
 	};
 
 	auto collision_free = [&](Node *q_near, Node *q_new) -> bool {
-
+		return linear_interp(map, x_size, y_size, q_near->angles.data(), q_new->angles.data(), numofDOFs);
 	};
 
-	auto distance = [&](Node *q_new, Node *q_target) -> double {
-
+	auto get_distance = [&](Node *q_new, Node *q_target) -> double {
+		double sum = 0;
+		for (size_t i = 0; i < q_new->angles.size(); ++i) {
+			double diff = q_new->angles[i] - q_target->angles[i];
+			sum += diff * diff;
+		}
+		return sum; 
 	};
 
 	// Extend(T, q_target):
 	auto extend = [&](std::vector<Node> *T, Node *q_target) -> State {
 		State state = TRAPPED;
 			
-		Node *q_near = nearest_neighbor(T, q_target); 
-		Node *q_new = step_torward(q_near, q_target, step_size); 
-	
-		if (collision_free(q_near, q_new))
+		int near_idx = nearest_neighbor(T, q_target);
+		Node q_new = step_torward(&(*T)[near_idx], q_target, step_size); 
+
+		if (collision_free(&(*T)[near_idx], &q_new))
 		{
-			// TODO: T.add_node(q_new)
-			if (distance(q_new, q_target) < threshold) state = REACHED; 
-			else state = ADVANCED;
+			q_new.parent = near_idx; 
+			
+			T->push_back(q_new);
+			
+			if (get_distance(&q_new, q_target) < threshold * threshold) {
+				state = REACHED;
+			} else {
+				state = ADVANCED;
+			}
 		}
 
 		return state; 
 	};
 
-	auto connect = [&](Node *q_goal, Node *q_new) -> State{
-
+	auto connect = [&](std::vector<Node> *T, Node *q_new) -> State {
+		State state;
+		do {
+			state = extend(T, q_new);
+		} while (state == ADVANCED);
+		return state;
 	};
 
 	auto sample_random_state = [&](Node &node) {
@@ -785,25 +830,109 @@ static void rrt_connect(
 		}
 	};
 
+	std::vector<Node>* current_tree = &tree_start;
+	std::vector<Node>* other_tree = &tree_goal;
+
     for (int i = 1; i < n; i++)
 	{
 		Node q_rand; // q_rand = sample_random_state()
 		sample_random_state(q_rand);
 
 		// Try to extend Tree A toward the random point
-		if (extend(&tree_start, &q_rand) != TRAPPED) // if Extend(T_start, q_rand) != "Trapped":
+		if (extend(current_tree, &q_rand) != TRAPPED) // if Extend(T_start, q_rand) != "Trapped":
 		{	
 			// # If successful, try to connect Tree B to the new node in Tree A
-			Node q_new = tree_start.back(); // q_new = T_start.latest_node()
-			if (connect(&q_goal, &q_new) == REACHED) // if Connect(T_goal, q_new) == "Reached":
-			{
-				//             return Path(T_start, T_goal)
+			Node q_new = current_tree->back(); // q_new = T_start.latest_node()
+			if (connect(other_tree, &q_new) == REACHED) {
+				std::vector<std::vector<double>> full_path;
+
+				int curr = current_tree->size() - 1;
+				while (curr != -1) {
+					full_path.push_back((*current_tree)[curr].angles);
+					curr = (*current_tree)[curr].parent;
+				}
+
+				if (current_tree == &tree_start) {
+					std::reverse(full_path.begin(), full_path.end());
+				}
+				std::vector<std::vector<double>> other_path;
+				int other = other_tree->size() - 1;
+				while (other != -1) {
+					other_path.push_back((*other_tree)[other].angles);
+					other = (*other_tree)[other].parent;
+				}
+
+				if (other_tree == &tree_start) {
+					std::reverse(other_path.begin(), other_path.end());
+					full_path.insert(full_path.end(), other_path.begin(), other_path.end());
+				} else {
+					full_path.insert(full_path.end(), other_path.begin(), other_path.end());
+				}
+
+				full_path.front() = std::vector<double>(armstart_anglesV_rad, armstart_anglesV_rad + numofDOFs);
+				full_path.back() = std::vector<double>(armgoal_anglesV_rad, armgoal_anglesV_rad + numofDOFs);
+
+				// 3. Fill the double*** plan
+				*planlength = full_path.size();
+				*plan = (double**)malloc((*planlength) * sizeof(double*));
+				for (int i = 0; i < *planlength; i++) {
+					(*plan)[i] = (double*)malloc(numofDOFs * sizeof(double));
+					for (int j = 0; j < numofDOFs; j++) {
+						(*plan)[i][j] = full_path[i][j];
+					}
+				}
+				return;
 			}
 		}
-			//     # Swap trees to expand from the other side in the next iteration
-			//     Swap(T_start, T_goal)
+
+		// Swap trees to expand from the other side in the next iteration
+		std::swap(current_tree, other_tree);
 	}
-    // return Failure
+
+	// Save RRT-Connect trees for visualization (same format as PRM graph)
+	if (!mapfile.empty()) {
+		string map_basename = mapfile.substr(mapfile.find_last_of("/\\") + 1);
+		string out_filename = "rrt_connect_graph_" + map_basename;
+		std::ofstream out_file(out_filename, std::ios::trunc);
+		if (out_file.is_open()) {
+			int total_nodes = (int)(tree_start.size() + tree_goal.size());
+			out_file << "DOFS " << numofDOFs << "\n";
+			out_file << "NODES " << total_nodes << "\n";
+
+			// tree_start nodes: indices 0 .. tree_start.size()-1
+			for (int i = 0; i < (int)tree_start.size(); i++) {
+				out_file << i;
+				for (int d = 0; d < numofDOFs; d++)
+					out_file << " " << tree_start[i].angles[d];
+				out_file << "\n";
+			}
+
+			// tree_goal nodes: indices tree_start.size() .. total_nodes-1
+			int offset = (int)tree_start.size();
+			for (int i = 0; i < (int)tree_goal.size(); i++) {
+				out_file << (offset + i);
+				for (int d = 0; d < numofDOFs; d++)
+					out_file << " " << tree_goal[i].angles[d];
+				out_file << "\n";
+			}
+
+			out_file << "EDGES\n";
+			// Edges within tree_start (parent -> child)
+			for (int i = 1; i < (int)tree_start.size(); i++) {
+				if (tree_start[i].parent != -1)
+					out_file << tree_start[i].parent << " " << i << "\n";
+			}
+			// Edges within tree_goal (parent -> child, offset indices)
+			for (int i = 1; i < (int)tree_goal.size(); i++) {
+				if (tree_goal[i].parent != -1)
+					out_file << (offset + tree_goal[i].parent) << " " << (offset + i) << "\n";
+			}
+
+			out_file.close();
+			cout << "RRT-Connect graph saved to " << out_filename << endl;
+		}
+	}
+
 	return;
 }
 
@@ -843,6 +972,10 @@ int main(int argc, char** argv) {
 	if (whichPlanner == 3) {
 		printf("Running PRM\n");
 		prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	}
+	else if (whichPlanner == 1) {
+		printf("Running rrt_connect\n");
+		rrt_connect(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	}
 	else linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	auto end_time = std::chrono::high_resolution_clock::now();
