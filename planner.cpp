@@ -384,7 +384,7 @@ bool linear_interp(double* map, int x_size, int y_size, double* start, double* e
 
 /** PRM Planner
  * 
- * NOTE: in progress
+ * 
 */
 static void prm(
 			double* map,
@@ -394,9 +394,7 @@ static void prm(
 			double* armgoal_anglesV_rad,
             int numofDOFs,
             double*** plan,
-            int* planlength,
-			int n,
-			int k
+            int* planlength
         	)
 {
 	// printf("Running PRM\n");
@@ -411,8 +409,8 @@ static void prm(
     using State = std::pair<double, int>;  
 	
 	const string mapfile = "map2.txt";
-	// const int n = 10000;
-	// const int k = 200;
+	const int n = 2000;
+	const int k = 160;
 	const long max_rand = 1000000L;
 	const double lower_bound = 0;
 	const double upper_bound = PI;
@@ -686,189 +684,127 @@ static void prm(
     return;
 }
 
-/** Parameter optimization 
+/** RRT Connect Planner
  * 
- * 
- */
-struct OptResult {
-    int n;
-    int k;
-    double cost;
-    double time;
-};
+ * NOTE: in progress
+*/
+static void rrt_connect(
+			double* map,
+			int x_size,
+			int y_size,
+			double* armstart_anglesV_rad,
+			double* armgoal_anglesV_rad,
+            int numofDOFs,
+            double*** plan,
+            int* planlength,
+			int n,
+			int k
+        	)
+{
 
-// A wrapper for your PRM that returns performance metrics
-OptResult evaluate_prm(int n, int k, double* map, int x_size, int y_size, 
-                      double* start, double* goal, int dofs) {
-    double** plan = NULL;
-    int planlength = 0;
-    
-    auto start_t = std::chrono::high_resolution_clock::now();
-    
-    // Call your prm function (modified to take n and k)
-    prm(map, x_size, y_size, start, goal, dofs, &plan, &planlength, n, k);
-    
-    auto end_t = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end_t - start_t;
+	// Connect(T, q_target):
+		// 	repeat:
+		// 		status = Extend(T, q_target)
+		// 	until status != "Advanced"
+		// 	return status
+	
+	struct Node {
+		std::vector<double> angles; // {x, y, z...}
+		double g_score = 1e9;       // Cost from start (for A*)
+		double f_score = 1e9;       // g_score + heuristic (for A*)
+		int parent = -1;            // Best parent found during A*
+		
+		std::vector<int> neighbors; // Indices of connected nodes
+	};
+	
+	int n = 1000;
+	double step_size = 1.0;
+	double threshold = 1.0;
+	const long max_rand = 1000000L;
+	double lower_bound = 0;
+	double upper_bound = PI;
+	srandom(time(NULL));
 
-    double cost = (planlength > 0) ? calc_cost(plan, dofs, planlength) : 1e9;
-    
-    // Clean up plan memory to prevent leaks during optimization
-    if(plan) {
-        for(int i=0; i<planlength; i++) free(plan[i]);
-        free(plan);
-    }
+    Node q_start; // T_start.init(q_start)
+	q_start.angles.assign(armstart_anglesV_rad, armstart_anglesV_rad + numofDOFs);
+    Node q_goal;// T_goal.init(q_goal)
+	q_goal.angles.assign(armgoal_anglesV_rad, armgoal_anglesV_rad + numofDOFs);
 
-    return {n, k, cost, elapsed.count()};
-}
+	std::vector<Node> tree_start;
+	std::vector<Node> tree_goal;
 
-void optimize_planner(double* map, int x_size, int y_size, double* start,
-                      double* goal, int dofs, double*** final_plan, int* final_length) {
+	tree_start.push_back(q_start);
+	tree_goal.push_back(q_goal);
 
-    // === Bayesian Optimization over (n, k) ===
-    // Surrogate: Gaussian Process with RBF kernel
-    // Acquisition: Expected Improvement (minimization)
-    const double N_MIN = 1000, N_MAX = 8000;
-    const double K_MIN = 10,   K_MAX = 200;
-    const double TIME_LIMIT = 4.5; // seconds (buffer below 5000ms limit)
-    const int INIT_SAMPLES = 3;
-    const int MAX_ITER = 500;
-    const int RUNS_PER_EVAL = 5;
-    const double GP_NOISE = 1e-4;
-    const double LENGTH_SCALE = 0.3; // RBF kernel length scale in normalized space
+	enum State {
+		REACHED, 
+		ADVANCED,
+		TRAPPED
+	};
 
-    // Normalize helpers
-    auto norm_n = [&](double n) { return (n - N_MIN) / (N_MAX - N_MIN); };
-    auto norm_k = [&](double k) { return (k - K_MIN) / (K_MAX - K_MIN); };
+	auto nearest_neighbor = [&](std::vector<Node> *T, Node *q_target) -> Node* {
 
-    // RBF kernel between two normalized points
-    auto rbf = [&](double n1, double k1, double n2, double k2) {
-        double dn = n1 - n2, dk = k1 - k2;
-        return std::exp(-(dn*dn + dk*dk) / (2.0 * LENGTH_SCALE * LENGTH_SCALE));
-    };
+	};
 
-    std::default_random_engine gen(time(NULL));
-    std::uniform_real_distribution<double> rand_n(N_MIN, N_MAX);
-    std::uniform_real_distribution<double> rand_k(K_MIN, K_MAX);
+	auto step_torward = [&](Node *q_near, Node *q_target, double step_size) -> Node* {
 
-    std::vector<double> obs_n, obs_k, obs_cost;
-    OptResult best_found = {0, 0, 1e9, 0.0};
+	};
 
-    auto add_observation = [&](int test_n, int test_k) {
-        double total_cost = 0.0, total_time = 0.0;
-        for (int r = 0; r < RUNS_PER_EVAL; r++) {
-            OptResult res = evaluate_prm(test_n, test_k, map, x_size, y_size, start, goal, dofs);
-            total_cost += res.cost;
-            total_time += res.time;
-        }
-        double avg_cost = total_cost / RUNS_PER_EVAL;
-        double avg_time = total_time / RUNS_PER_EVAL;
+	auto collision_free = [&](Node *q_near, Node *q_new) -> bool {
 
-        obs_n.push_back(norm_n(test_n));
-        obs_k.push_back(norm_k(test_k));
-        // Penalize infeasible (too slow) runs with a large cost
-        double penalized = (avg_time < TIME_LIMIT) ? avg_cost : 1e9;
-        obs_cost.push_back(penalized);
-        if (avg_time < TIME_LIMIT && avg_cost < best_found.cost) {
-            best_found = {test_n, test_k, avg_cost, avg_time};
-            printf("[BO] New Best: n=%d, k=%d, AvgCost=%.2f, AvgTime=%.2fs\n",
-                   test_n, test_k, avg_cost, avg_time);
-        }
-    };
+	};
 
-    // --- Phase 1: random initial samples ---
-    for (int i = 0; i < INIT_SAMPLES; i++)
-        add_observation((int)rand_n(gen), (int)rand_k(gen));
+	auto distance = [&](Node *q_new, Node *q_target) -> double {
 
-    // --- Phase 2: BO iterations ---
-    for (int iter = INIT_SAMPLES; iter < MAX_ITER; iter++) {
-		printf("%d\n", iter);
-        int m = (int)obs_n.size();
+	};
 
-        // Build K matrix (m x m) with noise on diagonal
-        std::vector<std::vector<double>> L(m, std::vector<double>(m, 0.0));
-        for (int i = 0; i < m; i++)
-            for (int j = 0; j < m; j++)
-                L[i][j] = rbf(obs_n[i], obs_k[i], obs_n[j], obs_k[j]) + (i == j ? GP_NOISE : 0.0);
+	// Extend(T, q_target):
+	auto extend = [&](std::vector<Node> *T, Node *q_target) -> State {
+		State state = TRAPPED;
+			
+		Node *q_near = nearest_neighbor(T, q_target); 
+		Node *q_new = step_torward(q_near, q_target, step_size); 
+	
+		if (collision_free(q_near, q_new))
+		{
+			// TODO: T.add_node(q_new)
+			if (distance(q_new, q_target) < threshold) state = REACHED; 
+			else state = ADVANCED;
+		}
 
-        // Cholesky: L overwritten with lower triangular factor
-        for (int i = 0; i < m; i++) {
-            for (int j = 0; j <= i; j++) {
-                double s = L[i][j];
-                for (int p = 0; p < j; p++) s -= L[i][p] * L[j][p];
-                L[i][j] = (i == j) ? std::sqrt(std::max(s, 1e-12)) : s / L[j][j];
-            }
-            for (int j = i + 1; j < m; j++) L[i][j] = 0.0;
-        }
+		return state; 
+	};
 
-        // Solve K * alpha = obs_cost via Cholesky (forward then back sub)
-        std::vector<double> tmp(m), alpha(m);
-        for (int i = 0; i < m; i++) {
-            double s = obs_cost[i];
-            for (int j = 0; j < i; j++) s -= L[i][j] * tmp[j];
-            tmp[i] = s / L[i][i];
-        }
-        for (int i = m - 1; i >= 0; i--) {
-            double s = tmp[i];
-            for (int j = i + 1; j < m; j++) s -= L[j][i] * alpha[j];
-            alpha[i] = s / L[i][i];
-        }
+	auto connect = [&](Node *q_goal, Node *q_new) -> State{
 
-        double f_best = *std::min_element(obs_cost.begin(), obs_cost.end());
+	};
 
-        // Grid search for max Expected Improvement
-        const int GRID = 35;
-        double best_ei = -1.0;
-        double cand_n = obs_n[0], cand_k = obs_k[0];
+	auto sample_random_state = [&](Node &node) {
+		for (int i = 0; i < numofDOFs; i++){
+			node.angles.push_back(lower_bound + (upper_bound - lower_bound) * (random() % max_rand)/ max_rand);
+		}
+	};
 
-        for (int gi = 0; gi < GRID; gi++) {
-            for (int gj = 0; gj < GRID; gj++) {
-                double cn = gi / (double)(GRID - 1);
-                double ck = gj / (double)(GRID - 1);
+    for (int i = 1; i < n; i++)
+	{
+		Node q_rand; // q_rand = sample_random_state()
+		sample_random_state(q_rand);
 
-                // GP posterior mean
-                double mu = 0.0;
-                for (int i = 0; i < m; i++)
-                    mu += rbf(cn, ck, obs_n[i], obs_k[i]) * alpha[i];
-
-                // GP posterior variance via v = L^{-1} k_star
-                std::vector<double> v(m);
-                for (int i = 0; i < m; i++) {
-                    double s = rbf(cn, ck, obs_n[i], obs_k[i]);
-                    for (int j = 0; j < i; j++) s -= L[i][j] * v[j];
-                    v[i] = s / L[i][i];
-                }
-                double var = 1.0; // k(x*, x*) = 1 for normalized RBF
-                for (int i = 0; i < m; i++) var -= v[i] * v[i];
-                double sigma = std::sqrt(std::max(var, 0.0));
-
-                // Expected Improvement (minimization form)
-                double ei = 0.0;
-                if (sigma > 1e-10) {
-                    double z = (f_best - mu) / sigma;
-                    double phi = std::exp(-0.5 * z * z) / std::sqrt(2.0 * M_PI);
-                    double Phi = 0.5 * (1.0 + std::erf(z / std::sqrt(2.0)));
-                    ei = (f_best - mu) * Phi + sigma * phi;
-                }
-                if (ei > best_ei) { best_ei = ei; cand_n = cn; cand_k = ck; }
-            }
-        }
-
-        // Denormalize candidate
-        int test_n = std::max((int)N_MIN, std::min((int)N_MAX,
-                        (int)(cand_n * (N_MAX - N_MIN) + N_MIN)));
-        int test_k = std::max((int)K_MIN, std::min((int)K_MAX,
-                        (int)(cand_k * (K_MAX - K_MIN) + K_MIN)));
-        add_observation(test_n, test_k);
-    }
-
-    // Final run with best found parameters
-    if (best_found.n > 0)
-        prm(map, x_size, y_size, start, goal, dofs, final_plan, final_length,
-            best_found.n, best_found.k);
-    else
-        prm(map, x_size, y_size, start, goal, dofs, final_plan, final_length, 5000, 20);
-	printf("Best parameters n: %d, and k: %d with cost: %f\n", best_found.n, best_found.k, calc_cost(*final_plan, dofs, *final_length));
+		// Try to extend Tree A toward the random point
+		if (extend(&tree_start, &q_rand) != TRAPPED) // if Extend(T_start, q_rand) != "Trapped":
+		{	
+			// # If successful, try to connect Tree B to the new node in Tree A
+			Node q_new = tree_start.back(); // q_new = T_start.latest_node()
+			if (connect(&q_goal, &q_new) == REACHED) // if Connect(T_goal, q_new) == "Reached":
+			{
+				//             return Path(T_start, T_goal)
+			}
+		}
+			//     # Swap trees to expand from the other side in the next iteration
+			//     Swap(T_start, T_goal)
+	}
+    // return Failure
+	return;
 }
 
 /** Your final solution will be graded by an grading script which will
@@ -906,7 +842,7 @@ int main(int argc, char** argv) {
 	auto start_time = std::chrono::high_resolution_clock::now();
 	if (whichPlanner == 3) {
 		printf("Running PRM\n");
-		prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength, 2000, 160);
+		prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	}
 	else linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	auto end_time = std::chrono::high_resolution_clock::now();
