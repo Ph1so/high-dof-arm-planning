@@ -663,6 +663,8 @@ static void prm(
         printf("A* failed to find a path.\n");
     }
 
+	printf("vertices: %d\n", n);
+
 	// auto end_time = std::chrono::high_resolution_clock::now();
     // std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
     // printf("time: %.4f ms\n", elapsed.count());
@@ -961,6 +963,7 @@ static void rrt_connect(
 						cout << "RRT-Connect graph saved to " << out_filename << endl;
 					}
 				}
+				printf("vertices: %d\n", (int)(tree_start.size() + tree_goal.size()));
 				return;
 			}
 		}
@@ -969,6 +972,7 @@ static void rrt_connect(
 		std::swap(current_tree, other_tree);
 	}
 
+	printf("vertices: %d\n", (int)(tree_start.size() + tree_goal.size()));
 	return;
 }
 
@@ -1028,7 +1032,10 @@ int main(int argc, char** argv) {
 		printf("Running rrt_connect\n");
 		rrt_connect(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	}
-	else linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	else {
+		printf("No planner for this config, using linear interp planner isntead\n");
+		linear_interp_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+	}
 	auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
     printf("time: %.4f ms\n", elapsed.count());
@@ -1040,6 +1047,11 @@ int main(int argc, char** argv) {
 		if (!IsValidArmConfiguration(plan[i], numOfDOFs, map, x_size, y_size)) printf("Invalid path\n");
 	}
 	// optimize_planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+
+	if (plan == NULL || planlength == 0) {
+		printf("no_path_found\n");
+		return 0;
+	}
 
 	//// Feel free to modify anything above.
 	//// If you modify something below, please change it back afterwards as the 
