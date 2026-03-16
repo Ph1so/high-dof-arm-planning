@@ -285,20 +285,6 @@ int IsValidArmConfiguration(double* angles, int numofDOFs, double*	map,
 	return 1;
 }
 
-double calc_cost(double** plan, int numofDOFs, int planlength)
-{
-	double total_cost = 0;
-	for (int i = 1; i < planlength; i++)
-	{
-		for (int n = 0; n < numofDOFs; n++)
-		{
-			total_cost += fabs(plan[i][n] - plan[i-1][n]);
-		}
-	}
-	return total_cost;
-}
-
-
 static void linear_interp_planner(
 			double* map,
 			int x_size,
@@ -722,11 +708,11 @@ static void rrt_connect(
 	double lower_bound = 0;
 	double upper_bound = 2*PI;
 	srandom(time(NULL));
-	const string mapfile = "map2.txt";
+	const string mapfile = "map1.txt";
 
     Node q_start; // T_start.init(q_start)
 	q_start.angles.assign(armstart_anglesV_rad, armstart_anglesV_rad + numofDOFs);
-    Node q_goal;// T_goal.init(q_goal)
+    Node q_goal; // T_goal.init(q_goal)
 	q_goal.angles.assign(armgoal_anglesV_rad, armgoal_anglesV_rad + numofDOFs);
 
 	std::vector<Node> tree_start;
@@ -742,17 +728,17 @@ static void rrt_connect(
 	};
 
 	auto nearest_neighbor = [&](const std::vector<Node> *T, Node *q_target) -> int {
-		double least_distance = 1e18; // Use a very large number
+		double least_distance = 1e18;
 		int best_index = 0;
 
-		for (int i = 0; i < (*T).size(); i++) {
+		for (int i = 0; i < (int)(*T).size(); i++) {
 			double sum_sq_dist = 0;
-			
 			for (int j = 0; j < numofDOFs; j++) {
 				double diff = (*T)[i].angles[j] - q_target->angles[j];
+				while (diff >  PI) diff -= 2 * PI;
+				while (diff < -PI) diff += 2 * PI;
 				sum_sq_dist += diff * diff;
 			}
-
 			if (sum_sq_dist < least_distance) {
 				least_distance = sum_sq_dist;
 				best_index = i;
@@ -763,19 +749,27 @@ static void rrt_connect(
 
 	auto step_torward = [&](Node *q_near, Node *q_target, double step_size) -> Node {
 		Node q_new;
-		q_new.angles.resize(numofDOFs); 
-		
+		q_new.angles.resize(numofDOFs);
+
+		// Use shortest-arc differences so step direction matches collision check
+		std::vector<double> diffs(numofDOFs);
 		double dist = 0;
 		for(int i = 0; i < numofDOFs; i++) {
 			double diff = q_target->angles[i] - q_near->angles[i];
+			while (diff >  PI) diff -= 2 * PI;
+			while (diff < -PI) diff += 2 * PI;
+			diffs[i] = diff;
 			dist += diff * diff;
 		}
 		dist = sqrt(dist);
 
-		if (dist < step_size) return *q_target; 
+		if (dist < step_size) return *q_target;
 
 		for(int i = 0; i < numofDOFs; i++) {
-			q_new.angles[i] = q_near->angles[i] + (q_target->angles[i] - q_near->angles[i]) * (step_size / dist);
+			double val = q_near->angles[i] + diffs[i] * (step_size / dist);
+			while (val <     0) val += 2 * PI;
+			while (val >= 2*PI) val -= 2 * PI;
+			q_new.angles[i] = val;
 		}
 		return q_new;
 	};
@@ -788,9 +782,11 @@ static void rrt_connect(
 		double sum = 0;
 		for (size_t i = 0; i < q_new->angles.size(); ++i) {
 			double diff = q_new->angles[i] - q_target->angles[i];
+			while (diff >  PI) diff -= 2 * PI;
+			while (diff < -PI) diff += 2 * PI;
 			sum += diff * diff;
 		}
-		return sum; 
+		return sum;
 	};
 
 	// Extend(T, q_target):
@@ -846,39 +842,123 @@ static void rrt_connect(
 			if (connect(other_tree, &q_new) == REACHED) {
 				std::vector<std::vector<double>> full_path;
 
-				int curr = current_tree->size() - 1;
+				// Always build: [start → ... → connection] from tree_start
+				//           + [connection → ... → goal] from tree_goal
+				std::vector<Node>* start_tree_ptr = (current_tree == &tree_start) ? current_tree : other_tree;
+				std::vector<Node>* goal_tree_ptr  = (current_tree == &tree_goal)  ? current_tree : other_tree;
+
+				// tree_start path: trace from latest node back to root, then reverse
+				std::vector<std::vector<double>> start_path;
+				int curr = (int)start_tree_ptr->size() - 1;
 				while (curr != -1) {
-					full_path.push_back((*current_tree)[curr].angles);
-					curr = (*current_tree)[curr].parent;
+					start_path.push_back((*start_tree_ptr)[curr].angles);
+					curr = (*start_tree_ptr)[curr].parent;
 				}
+				std::reverse(start_path.begin(), start_path.end());
 
-				if (current_tree == &tree_start) {
-					std::reverse(full_path.begin(), full_path.end());
-				}
-				std::vector<std::vector<double>> other_path;
-				int other = other_tree->size() - 1;
+				// tree_goal path: trace from latest node back to root (= goal); already in order connection→goal
+				std::vector<std::vector<double>> goal_path;
+				int other = (int)goal_tree_ptr->size() - 1;
 				while (other != -1) {
-					other_path.push_back((*other_tree)[other].angles);
-					other = (*other_tree)[other].parent;
+					goal_path.push_back((*goal_tree_ptr)[other].angles);
+					other = (*goal_tree_ptr)[other].parent;
 				}
 
-				if (other_tree == &tree_start) {
-					std::reverse(other_path.begin(), other_path.end());
-					full_path.insert(full_path.end(), other_path.begin(), other_path.end());
-				} else {
-					full_path.insert(full_path.end(), other_path.begin(), other_path.end());
-				}
+				full_path = start_path;
+				full_path.insert(full_path.end(), goal_path.begin(), goal_path.end());
 
 				full_path.front() = std::vector<double>(armstart_anglesV_rad, armstart_anglesV_rad + numofDOFs);
 				full_path.back() = std::vector<double>(armgoal_anglesV_rad, armgoal_anglesV_rad + numofDOFs);
 
-				// 3. Fill the double*** plan
-				*planlength = full_path.size();
+				// Linearly interpolate between each consecutive pair of waypoints
+				// so that no step exceeds PI/20 (18 degrees) on any joint.
+				std::vector<std::vector<double>> interpolated_path;
+				for (size_t seg = 0; seg < full_path.size() - 1; seg++) {
+					double* seg_start = full_path[seg].data();
+					double* seg_end   = full_path[seg + 1].data();
+
+					std::vector<double> diffs(numofDOFs);
+					double max_diff = 0;
+					for (int d = 0; d < numofDOFs; d++) {
+						double diff = seg_end[d] - seg_start[d];
+						while (diff >  PI) diff -= 2 * PI;
+						while (diff < -PI) diff += 2 * PI;
+						diffs[d] = diff;
+						if (fabs(diff) > max_diff) max_diff = fabs(diff);
+					}
+
+					int steps = (int)(max_diff / (PI / 20));
+					if (steps < 2) {
+						interpolated_path.push_back(full_path[seg]);
+						continue;
+					}
+
+					// Exclude endpoint (it becomes start of next segment)
+					for (int s = 0; s < steps - 1; s++) {
+						double t = (double)s / (steps - 1);
+						std::vector<double> state(numofDOFs);
+						for (int d = 0; d < numofDOFs; d++) {
+							double val = seg_start[d] + t * diffs[d];
+							while (val <     0) val += 2 * PI;
+							while (val >= 2*PI) val -= 2 * PI;
+							state[d] = val;
+						}
+						interpolated_path.push_back(state);
+					}
+				}
+				// Add the final goal state
+				interpolated_path.push_back(full_path.back());
+
+				*planlength = (int)interpolated_path.size();
 				*plan = (double**)malloc((*planlength) * sizeof(double*));
 				for (int i = 0; i < *planlength; i++) {
 					(*plan)[i] = (double*)malloc(numofDOFs * sizeof(double));
 					for (int j = 0; j < numofDOFs; j++) {
-						(*plan)[i][j] = full_path[i][j];
+						(*plan)[i][j] = interpolated_path[i][j];
+					}
+				}
+
+				// Save RRT-Connect trees for visualization (same format as PRM graph)
+				if (!mapfile.empty()) {
+					string map_basename = mapfile.substr(mapfile.find_last_of("/\\") + 1);
+					string out_filename = "rrt_connect_graph_" + map_basename;
+					std::ofstream out_file(out_filename, std::ios::trunc);
+					if (out_file.is_open()) {
+						int total_nodes = (int)(tree_start.size() + tree_goal.size());
+						out_file << "DOFS " << numofDOFs << "\n";
+						out_file << "NODES " << total_nodes << "\n";
+
+						// tree_start nodes: indices 0 .. tree_start.size()-1
+						for (int i = 0; i < (int)tree_start.size(); i++) {
+							out_file << i;
+							for (int d = 0; d < numofDOFs; d++)
+								out_file << " " << tree_start[i].angles[d];
+							out_file << "\n";
+						}
+
+						// tree_goal nodes: indices tree_start.size() .. total_nodes-1
+						int offset = (int)tree_start.size();
+						for (int i = 0; i < (int)tree_goal.size(); i++) {
+							out_file << (offset + i);
+							for (int d = 0; d < numofDOFs; d++)
+								out_file << " " << tree_goal[i].angles[d];
+							out_file << "\n";
+						}
+
+						out_file << "EDGES\n";
+						// Edges within tree_start (parent -> child)
+						for (int i = 1; i < (int)tree_start.size(); i++) {
+							if (tree_start[i].parent != -1)
+								out_file << tree_start[i].parent << " " << i << "\n";
+						}
+						// Edges within tree_goal (parent -> child, offset indices)
+						for (int i = 1; i < (int)tree_goal.size(); i++) {
+							if (tree_goal[i].parent != -1)
+								out_file << (offset + tree_goal[i].parent) << " " << (offset + i) << "\n";
+						}
+
+						out_file.close();
+						cout << "RRT-Connect graph saved to " << out_filename << endl;
 					}
 				}
 				return;
@@ -889,51 +969,22 @@ static void rrt_connect(
 		std::swap(current_tree, other_tree);
 	}
 
-	// Save RRT-Connect trees for visualization (same format as PRM graph)
-	if (!mapfile.empty()) {
-		string map_basename = mapfile.substr(mapfile.find_last_of("/\\") + 1);
-		string out_filename = "rrt_connect_graph_" + map_basename;
-		std::ofstream out_file(out_filename, std::ios::trunc);
-		if (out_file.is_open()) {
-			int total_nodes = (int)(tree_start.size() + tree_goal.size());
-			out_file << "DOFS " << numofDOFs << "\n";
-			out_file << "NODES " << total_nodes << "\n";
+	return;
+}
 
-			// tree_start nodes: indices 0 .. tree_start.size()-1
-			for (int i = 0; i < (int)tree_start.size(); i++) {
-				out_file << i;
-				for (int d = 0; d < numofDOFs; d++)
-					out_file << " " << tree_start[i].angles[d];
-				out_file << "\n";
-			}
-
-			// tree_goal nodes: indices tree_start.size() .. total_nodes-1
-			int offset = (int)tree_start.size();
-			for (int i = 0; i < (int)tree_goal.size(); i++) {
-				out_file << (offset + i);
-				for (int d = 0; d < numofDOFs; d++)
-					out_file << " " << tree_goal[i].angles[d];
-				out_file << "\n";
-			}
-
-			out_file << "EDGES\n";
-			// Edges within tree_start (parent -> child)
-			for (int i = 1; i < (int)tree_start.size(); i++) {
-				if (tree_start[i].parent != -1)
-					out_file << tree_start[i].parent << " " << i << "\n";
-			}
-			// Edges within tree_goal (parent -> child, offset indices)
-			for (int i = 1; i < (int)tree_goal.size(); i++) {
-				if (tree_goal[i].parent != -1)
-					out_file << (offset + tree_goal[i].parent) << " " << (offset + i) << "\n";
-			}
-
-			out_file.close();
-			cout << "RRT-Connect graph saved to " << out_filename << endl;
+double calc_cost(double** plan, int numofDOFs, int planlength, double*	map,
+			 int x_size, int y_size)
+{
+	double total_cost = 0;
+	for (int i = 1; i < planlength; i++)
+	{
+		for (int n = 0; n < numofDOFs; n++)
+		{
+			if (!linear_interp(map, x_size, y_size, plan[i], plan[i-1], numofDOFs)) printf("INVALID PATH\n");
+			total_cost += fabs(plan[i][n] - plan[i-1][n]);
 		}
 	}
-
-	return;
+	return total_cost;
 }
 
 /** Your final solution will be graded by an grading script which will
@@ -969,11 +1020,11 @@ int main(int argc, char** argv) {
 	double** plan = NULL;
 	int planlength = 0;
 	auto start_time = std::chrono::high_resolution_clock::now();
-	if (whichPlanner == 3) {
+	if (whichPlanner == PRM) {
 		printf("Running PRM\n");
 		prm(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	}
-	else if (whichPlanner == 1) {
+	else if (whichPlanner == RRTCONNECT) {
 		printf("Running rrt_connect\n");
 		rrt_connect(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 	}
@@ -981,7 +1032,7 @@ int main(int argc, char** argv) {
 	auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
     printf("time: %.4f ms\n", elapsed.count());
-	printf("cost: %f\n", calc_cost(plan, numOfDOFs, planlength));
+	printf("cost: %f\n", calc_cost(plan, numOfDOFs, planlength, map, x_size, y_size));
 
 	// double check that path is valid
 	for (int i = 0; i < planlength; i++)
